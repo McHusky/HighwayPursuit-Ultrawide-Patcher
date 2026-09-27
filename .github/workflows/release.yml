@@ -1,9 +1,8 @@
 name: Build release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -31,17 +30,16 @@ jobs:
         run: |
           mkdir -p dist/release
           go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/release/HighwayPursuit-Ultrawide-Patcher.exe .
-          cp README.md README_DE.md RELEASE_NOTES.md LICENSE dist/release/
+          cp README.md LICENSE dist/release/
           cd dist/release
           sha256sum HighwayPursuit-Ultrawide-Patcher.exe > SHA256SUMS.txt
           zip -9 ../HighwayPursuit-Ultrawide-Patcher-${GITHUB_REF_NAME}-win-portable.zip ./*
 
-      - name: Create GitHub release
+      - name: Upload release files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "dist/HighwayPursuit-Ultrawide-Patcher-${GITHUB_REF_NAME}-win-portable.zip" \
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "dist/HighwayPursuit-Ultrawide-Patcher-${{ github.event.release.tag_name }}-win-portable.zip" \
             "dist/release/SHA256SUMS.txt" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes-file RELEASE_NOTES.md
+            --clobber
