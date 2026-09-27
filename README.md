@@ -5,6 +5,12 @@ A source-available display compatibility patcher for the free PC game **Highway 
 **Original game / official game page:**  
 https://adamdawes.com/games/highway-pursuit.html
 
+<p align="center">
+  <img src="assets/highwaypursuit_5120x1440.png"
+       alt="Highway Pursuit at 5120x1440"
+       width="100%">
+</p>
+
 This project patches the user's existing `HighwayPursuit.exe`. No original game executable or game assets are distributed by this repository.
 
 ## What the patch adds
