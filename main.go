@@ -14,14 +14,32 @@ import (
 
 const (
 	appName     = "Highway Pursuit Modern Display Patcher"
-	appVersion  = "1.1.0"
+	appVersion  = "1.0.2"
 	gameExeName = "HighwayPursuit.exe"
 	patchMagic  = "HPUPATCH2"
-	patchAsset  = "assets/highway_pursuit_v6_guarded.patch"
 )
 
-//go:embed assets/highway_pursuit_v6_guarded.patch
+//go:embed assets/*.patch
 var patchFS embed.FS
+
+type patchDefinition struct {
+	ID          string
+	Description string
+	Asset       string
+}
+
+var supportedPatches = []patchDefinition{
+	{
+		ID:          "legacy-2015",
+		Description: "Legacy Highway Pursuit build (2015)",
+		Asset:       "assets/highway_pursuit_v6_guarded.patch",
+	},
+	{
+		ID:          "current-2025",
+		Description: "Current Highway Pursuit build (2025)",
+		Asset:       "assets/highway_pursuit_current_2025_guarded.patch",
+	},
+}
 
 type patchRecord struct {
 	Offset   uint32
@@ -31,6 +49,11 @@ type patchRecord struct {
 
 type patchSpec struct {
 	Records []patchRecord
+}
+
+type patchVariant struct {
+	Definition patchDefinition
+	Spec       patchSpec
 }
 
 type executableState int
@@ -50,7 +73,7 @@ type inspection struct {
 }
 
 func main() {
-	spec, err := loadPatchSpec()
+	variants, err := loadPatchVariants()
 	if err != nil {
 		showError(appName, "The embedded patch data could not be read.\n\n"+err.Error())
 		return
@@ -79,7 +102,7 @@ func main() {
 	}
 
 	if restore {
-		if err := restoreOriginal(target, spec); err != nil {
+		if err := restoreOriginal(target, variants); err != nil {
 			showError(appName, "Restore failed.\n\n"+err.Error())
 			return
 		}
@@ -87,7 +110,7 @@ func main() {
 		return
 	}
 
-	if err := patchGame(target, spec); err != nil {
+	if err := patchGame(target, variants); err != nil {
 		showError(appName, "Patch failed.\n\n"+err.Error())
 		return
 	}
@@ -139,9 +162,24 @@ func findTarget(explicit string) (string, error) {
 	return "", fmt.Errorf("%s was not found", gameExeName)
 }
 
-func loadPatchSpec() (patchSpec, error) {
+func loadPatchVariants() ([]patchVariant, error) {
+	variants := make([]patchVariant, 0, len(supportedPatches))
+	for _, def := range supportedPatches {
+		spec, err := loadPatchSpec(def.Asset)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", def.Asset, err)
+		}
+		variants = append(variants, patchVariant{Definition: def, Spec: spec})
+	}
+	if len(variants) == 0 {
+		return nil, errors.New("no embedded patch variants")
+	}
+	return variants, nil
+}
+
+func loadPatchSpec(asset string) (patchSpec, error) {
 	var spec patchSpec
-	blob, err := patchFS.ReadFile(patchAsset)
+	blob, err := patchFS.ReadFile(asset)
 	if err != nil {
 		return spec, err
 	}
@@ -223,7 +261,51 @@ func inspectExecutable(data []byte, spec patchSpec) (inspection, error) {
 	return result, nil
 }
 
-func patchGame(target string, spec patchSpec) error {
+type variantCheck struct {
+	Variant patchVariant
+	Check   inspection
+	Err     error
+}
+
+func inspectVariants(data []byte, variants []patchVariant) []variantCheck {
+	checks := make([]variantCheck, 0, len(variants))
+	for _, variant := range variants {
+		check, err := inspectExecutable(data, variant.Spec)
+		checks = append(checks, variantCheck{Variant: variant, Check: check, Err: err})
+	}
+	return checks
+}
+
+func checksWithState(checks []variantCheck, state executableState) []variantCheck {
+	out := make([]variantCheck, 0, len(checks))
+	for _, c := range checks {
+		if c.Err == nil && c.Check.State == state {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func closestCheck(checks []variantCheck) *variantCheck {
+	best := -1
+	bestScore := -1
+	for i := range checks {
+		if checks[i].Err != nil {
+			continue
+		}
+		score := checks[i].Check.OriginalMatches + checks[i].Check.PatchedMatches
+		if score > bestScore {
+			best = i
+			bestScore = score
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	return &checks[best]
+}
+
+func patchGame(target string, variants []patchVariant) error {
 	data, mode, err := readFileWithMode(target)
 	if err != nil {
 		return err
@@ -232,32 +314,44 @@ func patchGame(target string, spec patchSpec) error {
 		return errors.New("the selected file is not a Windows executable")
 	}
 
-	check, err := inspectExecutable(data, spec)
-	if err != nil {
-		return err
-	}
-	switch check.State {
-	case statePatched:
-		showInfo(appName, "This HighwayPursuit.exe is already patched.\n\nVersion: "+appVersion)
+	checks := inspectVariants(data, variants)
+	if patched := checksWithState(checks, statePatched); len(patched) > 0 {
+		showInfo(appName,
+			"This HighwayPursuit.exe is already patched.\n\n"+
+				"Detected build: "+patched[0].Variant.Definition.Description+"\n"+
+				"Patcher version: "+appVersion)
 		return nil
-	case stateMixed:
-		return fmt.Errorf(
-			"this executable appears to be partially patched or based on a different patch revision\n\n%d of %d patch locations contain patched bytes and %d still contain original bytes.\n\nNo files were changed.",
-			check.PatchedMatches, len(spec.Records), check.OriginalMatches,
-		)
-	case stateUnknown:
-		return fmt.Errorf(
-			"this HighwayPursuit.exe is not compatible with this patch revision\n\n%d of %d required patch locations differ from both the expected original and patched bytes%s\n\nThe patcher does not require a whole-file SHA-256 match, so unrelated game updates are allowed. However, changed bytes at a required patch location are rejected for safety.\n\nNo files were changed.",
-			len(check.UnknownRecords), len(spec.Records), formatRecordList(check.UnknownRecords, spec),
-		)
-	case stateOriginal:
-		// Safe to continue.
-	default:
-		return errors.New("could not determine executable compatibility")
 	}
 
+	originals := checksWithState(checks, stateOriginal)
+	if len(originals) == 0 {
+		if mixed := checksWithState(checks, stateMixed); len(mixed) > 0 {
+			c := mixed[0]
+			return fmt.Errorf(
+				"this executable appears to be partially patched\n\nDetected build: %s\n%d of %d patch locations contain patched bytes and %d still contain original bytes.\n\nNo files were changed.",
+				c.Variant.Definition.Description, c.Check.PatchedMatches, len(c.Variant.Spec.Records), c.Check.OriginalMatches,
+			)
+		}
+
+		if closest := closestCheck(checks); closest != nil {
+			return fmt.Errorf(
+				"this HighwayPursuit.exe does not match any supported patch layout\n\nClosest layout: %s\n%d of %d required patch locations differ from both the expected original and patched bytes%s\n\nThe patcher does not require a whole-file SHA-256 match, so unrelated game updates are allowed. Changed bytes at a required patch location are rejected for safety.\n\nNo files were changed.",
+				closest.Variant.Definition.Description,
+				len(closest.Check.UnknownRecords), len(closest.Variant.Spec.Records),
+				formatRecordList(closest.Check.UnknownRecords, closest.Variant.Spec),
+			)
+		}
+		return errors.New("this HighwayPursuit.exe does not match any supported patch layout\n\nNo files were changed")
+	}
+	if len(originals) > 1 {
+		return errors.New("more than one patch layout matched this executable; no files were changed")
+	}
+
+	selected := originals[0].Variant
+	spec := selected.Spec
 	if !askYesNo(appName,
 		"Compatible HighwayPursuit.exe found.\n\n"+
+			"Detected build: "+selected.Definition.Description+"\n\n"+
 			"This patch adds:\n"+
 			"- 1920x1080, 2160x1440, 3840x2160 and 5120x1440\n"+
 			"- Borderless fullscreen\n"+
@@ -296,6 +390,7 @@ func patchGame(target string, spec patchSpec) error {
 
 	showInfo(appName,
 		"Patch applied successfully.\n\n"+
+			"Detected build: "+selected.Definition.Description+"\n\n"+
 			"Backup:\n"+backup+"\n\n"+
 			"For XSplit Broadcaster, use Window Capture rather than Game Capture. "+
 			"Game Capture can cause stutter with Highway Pursuit's Direct3D 8 renderer.")
@@ -455,15 +550,31 @@ func reconstructedOriginal(current []byte, spec patchSpec) ([]byte, error) {
 	return original, nil
 }
 
-func restoreOriginal(target string, spec patchSpec) error {
+func restoreOriginal(target string, variants []patchVariant) error {
 	current, mode, err := readFileWithMode(target)
 	if err != nil {
 		return err
 	}
-	check, err := inspectExecutable(current, spec)
-	if err == nil && check.State == stateOriginal {
-		return errors.New("the selected HighwayPursuit.exe already contains the original bytes at all patch locations")
+
+	checks := inspectVariants(current, variants)
+	patched := checksWithState(checks, statePatched)
+	originals := checksWithState(checks, stateOriginal)
+	mixed := checksWithState(checks, stateMixed)
+
+	if len(patched) == 0 && len(mixed) == 0 {
+		if len(originals) > 0 {
+			return errors.New("the selected HighwayPursuit.exe already contains the original bytes at all patch locations")
+		}
+		return errors.New("the selected HighwayPursuit.exe does not match a supported patched layout")
 	}
+
+	var selected patchVariant
+	if len(patched) > 0 {
+		selected = patched[0].Variant
+	} else {
+		selected = mixed[0].Variant
+	}
+	spec := selected.Spec
 
 	expectedOriginal, err := reconstructedOriginal(current, spec)
 	if err != nil {
@@ -492,7 +603,8 @@ func restoreOriginal(target string, spec patchSpec) error {
 		return errors.New("no exact backup matching this executable was found next to the game")
 	}
 
-	if !askYesNo(appName, "Restore the matching original HighwayPursuit.exe from:\n\n"+backup+"?") {
+	if !askYesNo(appName,
+		"Detected build: "+selected.Definition.Description+"\n\nRestore the matching original HighwayPursuit.exe from:\n\n"+backup+"?") {
 		return nil
 	}
 

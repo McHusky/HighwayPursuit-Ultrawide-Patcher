@@ -1,14 +1,16 @@
-name: Build release
+name: Validate source build
 
 on:
+  push:
+  pull_request:
   release:
     types: [published]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -17,29 +19,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
+          go-version: "1.27.1"
 
-      - name: Test
-        run: go test ./...
+      - name: Run tests
+        run: go test .
 
-      - name: Build portable Windows executable
+      - name: Verify Windows build
         env:
           CGO_ENABLED: "0"
           GOOS: windows
           GOARCH: "386"
         run: |
-          mkdir -p dist/release
-          go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/release/HighwayPursuit-Ultrawide-Patcher.exe .
-          cp README.md LICENSE dist/release/
-          cd dist/release
-          sha256sum HighwayPursuit-Ultrawide-Patcher.exe > SHA256SUMS.txt
-          zip -9 ../HighwayPursuit-Ultrawide-Patcher-${GITHUB_REF_NAME}-win-portable.zip ./*
+          mkdir -p dist
+          go build -trimpath -ldflags="-H=windowsgui" -o dist/HighwayPursuit-Ultrawide-Patcher.exe .
 
-      - name: Upload release files
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Explain release behavior
+        if: github.event_name == 'release'
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "dist/HighwayPursuit-Ultrawide-Patcher-${{ github.event.release.tag_name }}-win-portable.zip" \
-            "dist/release/SHA256SUMS.txt" \
-            --clobber
+          echo "Source validation completed."
+          echo "No pre-built executable is uploaded by this workflow."
+          echo "Users can download GitHub's automatic Source code archive and run build.bat."

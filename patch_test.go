@@ -6,29 +6,38 @@ import (
 	"testing"
 )
 
-func TestEmbeddedPatchParses(t *testing.T) {
-	spec, err := loadPatchSpec()
+func mustLoadVariants(t *testing.T) []patchVariant {
+	t.Helper()
+	variants, err := loadPatchVariants()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spec.Records) == 0 {
-		t.Fatal("no patch records")
+	if len(variants) < 2 {
+		t.Fatalf("expected at least two supported variants, got %d", len(variants))
 	}
-	for i, rec := range spec.Records {
-		if len(rec.Original) == 0 || len(rec.Original) != len(rec.Patched) {
-			t.Fatalf("record %d has invalid lengths", i)
-		}
-		if bytes.Equal(rec.Original, rec.Patched) {
-			t.Fatalf("record %d does not change bytes", i)
-		}
+	return variants
+}
+
+func TestEmbeddedPatchesParse(t *testing.T) {
+	variants := mustLoadVariants(t)
+	for _, variant := range variants {
+		t.Run(variant.Definition.ID, func(t *testing.T) {
+			if len(variant.Spec.Records) == 0 {
+				t.Fatal("no patch records")
+			}
+			for i, rec := range variant.Spec.Records {
+				if len(rec.Original) == 0 || len(rec.Original) != len(rec.Patched) {
+					t.Fatalf("record %d has invalid lengths", i)
+				}
+				if bytes.Equal(rec.Original, rec.Patched) {
+					t.Fatalf("record %d does not change bytes", i)
+				}
+			}
+		})
 	}
 }
 
-func TestUnrelatedChangesRemainCompatible(t *testing.T) {
-	spec, err := loadPatchSpec()
-	if err != nil {
-		t.Fatal(err)
-	}
+func syntheticOriginal(spec patchSpec) []byte {
 	maxEnd := 0
 	for _, rec := range spec.Records {
 		end := int(rec.Offset) + len(rec.Original)
@@ -41,50 +50,73 @@ func TestUnrelatedChangesRemainCompatible(t *testing.T) {
 	for _, rec := range spec.Records {
 		copy(data[int(rec.Offset):int(rec.Offset)+len(rec.Original)], rec.Original)
 	}
+	return data
+}
 
-	check, err := inspectExecutable(data, spec)
-	if err != nil || check.State != stateOriginal {
-		t.Fatalf("expected original-compatible state, got %+v, err=%v", check, err)
-	}
+func TestUnrelatedChangesRemainCompatible(t *testing.T) {
+	for _, variant := range mustLoadVariants(t) {
+		t.Run(variant.Definition.ID, func(t *testing.T) {
+			data := syntheticOriginal(variant.Spec)
+			check, err := inspectExecutable(data, variant.Spec)
+			if err != nil || check.State != stateOriginal {
+				t.Fatalf("expected original-compatible state, got %+v, err=%v", check, err)
+			}
 
-	// Change a byte outside all patch records. Whole-file hash gating would reject
-	// this, but patch-site compatibility checking should still allow it.
-	data[len(data)-1] ^= 0x5A
-	check, err = inspectExecutable(data, spec)
-	if err != nil || check.State != stateOriginal {
-		t.Fatalf("unrelated change should remain compatible, got %+v, err=%v", check, err)
+			// Change a byte outside all guarded records. Whole-file hash gating would
+			// reject this, but patch-site compatibility checking should still allow it.
+			data[len(data)-1] ^= 0x5A
+			check, err = inspectExecutable(data, variant.Spec)
+			if err != nil || check.State != stateOriginal {
+				t.Fatalf("unrelated change should remain compatible, got %+v, err=%v", check, err)
+			}
+		})
 	}
 }
 
 func TestChangedPatchSiteIsRejected(t *testing.T) {
-	spec, err := loadPatchSpec()
-	if err != nil {
-		t.Fatal(err)
+	for _, variant := range mustLoadVariants(t) {
+		t.Run(variant.Definition.ID, func(t *testing.T) {
+			data := syntheticOriginal(variant.Spec)
+			first := variant.Spec.Records[0]
+			data[int(first.Offset)] ^= 0x7F
+			check, err := inspectExecutable(data, variant.Spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if check.State != stateUnknown || len(check.UnknownRecords) == 0 {
+				t.Fatalf("changed patch site should be rejected, got %+v", check)
+			}
+		})
 	}
-	maxEnd := 0
-	for _, rec := range spec.Records {
-		end := int(rec.Offset) + len(rec.Original)
-		if end > maxEnd {
-			maxEnd = end
+}
+
+func TestVariantSelectionOnSyntheticInputs(t *testing.T) {
+	variants := mustLoadVariants(t)
+	for _, want := range variants {
+		data := syntheticOriginal(want.Spec)
+		checks := inspectVariants(data, variants)
+		matches := checksWithState(checks, stateOriginal)
+		if len(matches) != 1 {
+			t.Fatalf("%s: expected exactly one original match, got %d", want.Definition.ID, len(matches))
+		}
+		if matches[0].Variant.Definition.ID != want.Definition.ID {
+			t.Fatalf("%s: matched %s", want.Definition.ID, matches[0].Variant.Definition.ID)
 		}
 	}
-	data := make([]byte, maxEnd+1)
+}
+
+func applySpec(data []byte, spec patchSpec) []byte {
+	patched := append([]byte(nil), data...)
 	for _, rec := range spec.Records {
-		copy(data[int(rec.Offset):int(rec.Offset)+len(rec.Original)], rec.Original)
+		end := int(rec.Offset) + len(rec.Patched)
+		copy(patched[int(rec.Offset):end], rec.Patched)
 	}
-	first := spec.Records[0]
-	data[int(first.Offset)] ^= 0x7F
-	check, err := inspectExecutable(data, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if check.State != stateUnknown || len(check.UnknownRecords) == 0 {
-		t.Fatalf("changed patch site should be rejected, got %+v", check)
-	}
+	return patched
 }
 
 // Optional integration test. It is intentionally skipped unless a locally owned
 // original executable path is supplied, so the repository never needs game files.
+// The patcher automatically selects whichever embedded layout matches the file.
 func TestPatchAgainstOriginal(t *testing.T) {
 	path := os.Getenv("HP_ORIGINAL_EXE")
 	if path == "" {
@@ -94,24 +126,15 @@ func TestPatchAgainstOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec, err := loadPatchSpec()
-	if err != nil {
-		t.Fatal(err)
+	variants := mustLoadVariants(t)
+	checks := inspectVariants(original, variants)
+	matches := checksWithState(checks, stateOriginal)
+	if len(matches) != 1 {
+		t.Fatalf("input did not match exactly one supported original layout: %+v", checks)
 	}
-	check, err := inspectExecutable(original, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if check.State != stateOriginal {
-		t.Fatalf("input is not compatible with the guarded patch: %+v", check)
-	}
-
-	patched := append([]byte(nil), original...)
-	for _, rec := range spec.Records {
-		end := int(rec.Offset) + len(rec.Patched)
-		copy(patched[int(rec.Offset):end], rec.Patched)
-	}
-	check, err = inspectExecutable(patched, spec)
+	selected := matches[0].Variant
+	patched := applySpec(original, selected.Spec)
+	check, err := inspectExecutable(patched, selected.Spec)
 	if err != nil {
 		t.Fatal(err)
 	}

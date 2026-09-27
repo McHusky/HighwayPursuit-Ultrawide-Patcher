@@ -1,6 +1,6 @@
 # Highway Pursuit Modern Display Patcher
 
-A small, dependency-free display compatibility patcher for the free PC game **Highway Pursuit**.
+A source-available display compatibility patcher for the free PC game **Highway Pursuit**.
 
 **Original game / official game page:**  
 https://adamdawes.com/games/highway-pursuit.html
@@ -29,55 +29,48 @@ It also includes:
 - Automatic exact backup of the executable before patching
 - Safe compatibility checks at every location that will actually be modified
 
-## Installation
+## Installation / one-click source build
 
 1. Install or extract Highway Pursuit from the original game page above.
-2. Download the latest patcher release ZIP from this repository.
-3. Extract `HighwayPursuit-Ultrawide-Patcher.exe` into the Highway Pursuit game folder, next to `HighwayPursuit.exe`.
-4. Make sure the game is closed.
-5. Double-click `HighwayPursuit-Ultrawide-Patcher.exe`.
-6. Confirm the patch when prompted.
-7. Start the game and select the desired resolution in **Options -> Graphics options**.
+2. On this GitHub repository choose **Code -> Download ZIP**, or download GitHub's automatic **Source code (zip)** from a release.
+3. Extract the source ZIP to a normal folder.
+4. Double-click `build.bat`.
+5. On the first run, `build.bat` downloads the official portable Go toolchain from `https://go.dev/dl/`, verifies its SHA-256 checksum and extracts it only into the local `tools` folder.
+6. The script runs the tests and builds:
 
-You can also drag `HighwayPursuit.exe` onto the patcher.
+   `dist\HighwayPursuit-Ultrawide-Patcher.exe`
 
-The patcher creates an exact backup named `HighwayPursuit.original.exe` before modifying the game. If that filename is already used by a different executable, a numbered backup name is chosen instead.
+7. Copy that EXE into the Highway Pursuit game folder, next to the original `HighwayPursuit.exe`.
+8. Make sure the game is closed and run `HighwayPursuit-Ultrawide-Patcher.exe`.
+9. Confirm the patch when prompted.
+10. Start the game and select the desired resolution in **Options -> Graphics options**.
 
-## Restoring the original
+The portable Go toolchain is not installed system-wide, does not require administrator rights and can be removed simply by deleting the source folder's `tools` directory.
 
-The executable that existed immediately before patching is kept as a backup.
+### What `build.bat` downloads
 
-To restore it, run:
+The Windows build script is deliberately pinned to one official Go archive rather than downloading an unspecified latest version:
 
-```text
-HighwayPursuit-Ultrawide-Patcher.exe --restore
-```
+- Go: `1.27.1`
+- Archive: `go1.27.1.windows-amd64.zip`
+- Source: `https://go.dev/dl/go1.27.1.windows-amd64.zip`
+- Expected SHA-256: `a3911b5e0e1b1053f25ed0675f4c1c6aad1e2bfcf253df2b9be4caabd2edd95d`
 
-The patcher finds the backup that exactly corresponds to the currently patched executable and restores it byte-for-byte.
+If the checksum does not match, the archive is not extracted and the build stops.
 
-## No runtime installation required
+## Antivirus note
 
-The release patcher is a standalone Windows executable built with Go and the standard library only. End users do **not** need Python, .NET, Visual C++ redistributables, Go, or an installer.
+This program modifies another Windows executable by design. That behavior, combined with a new unsigned executable having little or no reputation, can trigger heuristic antivirus detections even when built from this source.
 
-The published executable is unsigned unless the release maintainer code-signs it. Windows SmartScreen may therefore show a warning for a new or low-reputation build. The complete source is provided so the patcher can be audited or rebuilt.
+Building locally avoids browsers blocking a pre-built binary download, but it cannot guarantee that every antivirus product will accept the resulting EXE. Do not disable antivirus protection to run the patcher. The source and patch data are included so the behavior can be reviewed before building.
 
-## Building from source
+## GitHub releases
 
-Developers need Go 1.21 or newer.
+The repository intentionally does **not** upload a pre-built patcher executable.
 
-On Windows:
+When a GitHub Release is published, GitHub automatically provides **Source code (zip)** and **Source code (tar.gz)**. Windows users can download the source ZIP, extract it and run `build.bat`.
 
-```bat
-build.bat
-```
-
-On Linux/macOS with Go installed:
-
-```sh
-./build.sh
-```
-
-The build scripts produce a 32-bit Windows GUI executable. The 32-bit binary also runs normally on modern 64-bit Windows systems.
+The included GitHub Actions workflow only tests the source and verifies that the Windows executable can be built. It does not attach a binary to the release.
 
 ## License and disclaimer
 
